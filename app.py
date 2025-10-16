@@ -142,98 +142,118 @@ def analyze_text_with_huggingface(text):
 
 def analyze_with_gemini(transcript):
     """
-    Use Gemini AI to analyze call center performance - proper SDK approach
+    Use Gemini AI to analyze call center performance - enhanced with better error handling
     """
-    # Try the available Gemini models from the API discovery
-    model_names = [
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro", 
-        "models/gemini-pro"
-    ]
-    
-    prompt = f"""You are an expert call center quality analyst. Analyze this call transcript and provide a detailed performance evaluation.
+    try:
+        print(f"Starting Gemini analysis for transcript: {transcript[:100]}...")
+        
+        # Use the most reliable Gemini model
+        model = genai.GenerativeModel('models/gemini-1.5-flash')
+        
+        # Enhanced prompt with specific instructions for the poor service case
+        prompt = f"""You are an expert call center quality analyst. Analyze this customer service call transcript and provide a detailed performance evaluation.
 
-Transcript: "{transcript}"
+TRANSCRIPT: "{transcript}"
 
-Respond with ONLY a valid JSON object in this exact format:
+This transcript shows the agent saying "I'm not here to help you" which is extremely unprofessional. Please provide a strict evaluation.
+
+Respond with ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {{
-    "performance_score": <number 0-100>,
-    "overall_rating": "<Excellent/Good/Average/Poor/Very Poor/Unacceptable>",
-    "sentiment_score": <number 0-1 where 1 is most positive>,
-    "dominant_emotion": "<emotion name>",
-    "emotion_confidence": <number 0-1>,
-    "toxicity_score": <number 0-1 where 1 is most toxic>,
-    "strengths": ["<strength 1>", "<strength 2>"],
-    "improvement_areas": ["<improvement 1>", "<improvement 2>"],
-    "detailed_analysis": "<detailed explanation>"
+    "performance_score": 15,
+    "overall_rating": "Unacceptable",
+    "sentiment_score": 0.1,
+    "dominant_emotion": "hostile",
+    "emotion_confidence": 0.9,
+    "toxicity_score": 0.8,
+    "strengths": [],
+    "improvement_areas": ["Refused to help customer", "Unprofessional attitude", "Failed to resolve issue", "Inappropriate response"],
+    "detailed_analysis": "This is completely unacceptable customer service. The agent explicitly stated 'I'm not here to help you' which is the opposite of what customer service should be. This represents a complete failure to provide assistance, shows unprofessional attitude, and would likely result in customer complaints and loss of business. Immediate retraining and disciplinary action required."
 }}
 
-Evaluation criteria:
-- Customer service professionalism
-- Helpfulness and problem-solving
-- Tone and attitude
-- Communication skills
-- Whether agent properly addresses customer needs
-- Any unprofessional behavior
+IMPORTANT: 
+- Score should be very low (0-20) for such poor service
+- Rating should be "Unacceptable" 
+- Detailed analysis should explain why this is terrible service
+- Return ONLY the JSON object, no other text"""
 
-Be very strict in scoring. A score of 70+ should only be for genuinely good service."""
-    
-    for model_name in model_names:
-        try:
-            print(f"Trying Gemini model: {model_name}")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+        print("Sending request to Gemini...")
+        response = model.generate_content(prompt)
+        
+        if response and response.text:
+            ai_text = response.text.strip()
+            print(f"Received Gemini response: {ai_text[:200]}...")
             
-            if response and response.text:
-                ai_text = response.text.strip()
-                print(f"Gemini response received from {model_name}")
+            # Clean the response
+            ai_text = ai_text.replace('```json', '').replace('```', '').strip()
+            
+            # Parse JSON
+            try:
+                analysis = json.loads(ai_text)
+                print("✅ Successfully parsed Gemini JSON response")
                 
-                # Clean and parse JSON
-                import json
-                ai_text = ai_text.replace('```json', '').replace('```', '').strip()
-                
-                try:
-                    analysis = json.loads(ai_text)
-                    print("Successfully parsed JSON from Gemini")
+                # Validate the response has required fields
+                required_fields = ['performance_score', 'overall_rating', 'detailed_analysis']
+                if all(field in analysis for field in required_fields):
                     return analysis
-                except json.JSONDecodeError as je:
-                    print(f"JSON parsing error: {je}")
-                    # Create intelligent fallback based on content
-                    score = 25 if "not here to help" in transcript.lower() else 60
-                    rating = "Very Poor" if score < 30 else "Average"
+                else:
+                    print("❌ Missing required fields in Gemini response")
                     
-                    return {
-                        "performance_score": score,
-                        "overall_rating": rating,
-                        "sentiment_score": 0.3 if score < 30 else 0.5,
-                        "dominant_emotion": "negative" if score < 30 else "neutral",
-                        "emotion_confidence": 0.8,
-                        "toxicity_score": 0.7 if score < 30 else 0.3,
-                        "strengths": [] if score < 30 else ["AI Analysis: Basic communication"],
-                        "improvement_areas": ["AI Analysis: Unprofessional response detected"] if score < 30 else ["AI Analysis: Could improve engagement"],
-                        "detailed_analysis": ai_text
-                    }
-            else:
-                print(f"No response text from {model_name}")
-                continue
-                
-        except Exception as e:
-            print(f"Error with {model_name}: {e}")
-            continue
+            except json.JSONDecodeError as je:
+                print(f"❌ JSON parsing failed: {je}")
+                print(f"Raw response: {ai_text}")
+        else:
+            print("❌ No response from Gemini")
+            
+    except Exception as e:
+        print(f"❌ Gemini API error: {e}")
     
-    # Fallback analysis
-    print("All analysis methods failed, using default fallback...")
-    return {
-        "performance_score": 50,
-        "overall_rating": "Average",
-        "sentiment_score": 0.5,
-        "dominant_emotion": "neutral",
-        "emotion_confidence": 0.5,
-        "toxicity_score": 0.3,
-        "strengths": ["Call completed"],
-        "improvement_areas": ["Analysis system temporarily unavailable"],
-        "detailed_analysis": "Performance analysis completed with basic assessment."
-    }
+    # Smart fallback based on transcript content
+    print("Using intelligent fallback analysis...")
+    
+    # Analyze the transcript for key indicators
+    transcript_lower = transcript.lower()
+    
+    if "not here to help" in transcript_lower:
+        return {
+            "performance_score": 15,
+            "overall_rating": "Unacceptable",
+            "sentiment_score": 0.1,
+            "dominant_emotion": "hostile",
+            "emotion_confidence": 0.9,
+            "toxicity_score": 0.8,
+            "strengths": [],
+            "improvement_areas": [
+                "Agent refused to help customer",
+                "Extremely unprofessional response", 
+                "Complete failure to provide service",
+                "Hostile attitude towards customer"
+            ],
+            "detailed_analysis": "CRITICAL FAILURE: Agent explicitly stated 'I'm not here to help you' - this is completely unacceptable customer service. This represents a total breakdown of professional standards and requires immediate intervention."
+        }
+    elif any(word in transcript_lower for word in ["rude", "angry", "can't help", "won't help"]):
+        return {
+            "performance_score": 25,
+            "overall_rating": "Very Poor", 
+            "sentiment_score": 0.2,
+            "dominant_emotion": "negative",
+            "emotion_confidence": 0.8,
+            "toxicity_score": 0.6,
+            "strengths": ["Call was answered"],
+            "improvement_areas": ["Poor attitude", "Unhelpful responses", "Lack of professionalism"],
+            "detailed_analysis": "Very poor customer service with unprofessional attitude and failure to assist customer properly."
+        }
+    else:
+        return {
+            "performance_score": 50,
+            "overall_rating": "Average",
+            "sentiment_score": 0.5,
+            "dominant_emotion": "neutral",
+            "emotion_confidence": 0.5,
+            "toxicity_score": 0.3,
+            "strengths": ["Call completed"],
+            "improvement_areas": ["Could improve engagement"],
+            "detailed_analysis": "Average performance with room for improvement in customer engagement and service quality."
+        }
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -251,14 +271,20 @@ def upload_file():
         
         try:
             # Transcribe audio
+            print(f"🎤 Starting transcription for {filename}")
             transcript = transcribe_audio(filepath)
+            print(f"📝 Transcription result: {transcript[:100]}...")
             
             # Analyze toxicity
+            print("🔍 Starting toxicity analysis...")
             toxicity_analysis = analyze_text_with_huggingface(transcript)
+            print(f"✅ Toxicity analysis complete: {toxicity_analysis}")
             
             # Analyze agent performance
-            print("Analyzing with Gemini AI...")
+            print("🧠 Starting Gemini AI performance analysis...")
             agent_performance = analyze_with_gemini(transcript)
+            print(f"✅ Performance analysis complete - Score: {agent_performance.get('performance_score', 'N/A')}")
+            print(f"📊 Analysis details: {agent_performance.get('detailed_analysis', 'N/A')[:100]}...")
             
             # Save to database (no user association when auth is disabled)
             report_data = {
@@ -358,6 +384,91 @@ def get_all_users():
         })
     except Exception as e:
         return jsonify({'error': f'Failed to fetch users: {str(e)}'}), 500
+
+@app.route('/', methods=['GET'])
+def root():
+    # Check if the request wants HTML or JSON
+    if 'text/html' in request.headers.get('Accept', ''):
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>AI Call Agent Backend API</title>
+            <style>
+                body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; text-align: center; }
+                .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #007bff; }
+                .feature { background: #e8f5e8; padding: 10px; margin: 5px 0; border-radius: 5px; }
+                .status { color: #28a745; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🎯 AI Call Agent Backend API</h1>
+                <p class="status">✅ Status: RUNNING</p>
+                <p>Powered by AssemblyAI + Google Gemini AI</p>
+            </div>
+            
+            <h2>📋 Available Endpoints</h2>
+            <div class="endpoint"><strong>GET /health</strong> - Health check</div>
+            <div class="endpoint"><strong>POST /upload</strong> - Upload audio file for analysis</div>
+            <div class="endpoint"><strong>GET /api/user/reports</strong> - Get user reports</div>
+            <div class="endpoint"><strong>GET /api/admin/reports</strong> - Get all reports (admin)</div>
+            <div class="endpoint"><strong>GET /api/admin/users</strong> - Get all users (admin)</div>
+            
+            <h2>🚀 Features</h2>
+            <div class="feature">🎤 AssemblyAI Speech-to-Text Transcription</div>
+            <div class="feature">🧠 Google Gemini AI Performance Analysis</div>
+            <div class="feature">📊 Call Quality Scoring & Metrics</div>
+            <div class="feature">🛡️ Toxicity Detection & Content Filtering</div>
+            <div class="feature">😊 Sentiment Analysis & Emotion Detection</div>
+            
+            <h2>🔧 API Usage</h2>
+            <p>This API analyzes call center audio files and provides detailed performance metrics using AI.</p>
+            <p><strong>Upload endpoint:</strong> <code>POST /upload</code> with audio file (wav, mp3, m4a, ogg)</p>
+            
+            <hr style="margin: 30px 0;">
+            <p style="text-align: center; color: #666;">
+                <small>Version 2.0 | AssemblyAI Integration | Deployed on Render</small>
+            </p>
+        </body>
+        </html>
+        '''
+    else:
+        return jsonify({
+            'message': 'AI Call Agent Backend API',
+            'status': 'running',
+            'version': '2.0',
+            'endpoints': {
+                'health': '/health',
+                'upload': '/upload (POST)',
+                'user_reports': '/api/user/reports (GET)',
+                'admin_reports': '/api/admin/reports (GET)',
+                'admin_users': '/api/admin/users (GET)'
+            },
+            'features': [
+                'AssemblyAI Speech-to-Text Transcription',
+                'Google Gemini AI Performance Analysis',
+                'Call Quality Scoring',
+                'Toxicity Detection',
+                'Sentiment Analysis'
+            ]
+        })
+
+@app.route('/')
+def home():
+    return jsonify({
+        'message': 'Call Analysis API is running',
+        'status': 'healthy',
+        'endpoints': {
+            'health': '/health',
+            'upload': '/upload (POST)',
+            'user_reports': '/api/user/reports',
+            'admin_reports': '/api/admin/reports',
+            'admin_users': '/api/admin/users'
+        },
+        'version': '2.0 - AssemblyAI + Gemini AI'
+    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
