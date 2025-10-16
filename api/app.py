@@ -11,15 +11,10 @@ import jwt
 from functools import wraps
 from datetime import datetime, timedelta
 import json
+import assemblyai as aai
 
-# For transcription - import these only when needed to avoid serverless issues
-def get_whisper():
-    try:
-        import whisper
-        return whisper
-    except ImportError:
-        print("Whisper not available, using OpenAI API")
-        return None
+# Configure AssemblyAI
+aai.settings.api_key = "d077bc5d77b24e22bd8e7258b34332a3"
 
 def get_transformers():
     try:
@@ -35,14 +30,6 @@ def get_openai():
         return OpenAI
     except ImportError:
         print("OpenAI library not available")
-        return None
-
-def get_elevenlabs():
-    try:
-        import assemblyai as aai
-        return aai
-    except ImportError:
-        print("AssemblyAI not available, using fallback transcription")
         return None
 
 # Add your Gemini API key here
@@ -203,214 +190,35 @@ def allowed_file(filename):
 
 def transcribe_audio(filepath):
     """
-    Transcribe audio using OpenAI Whisper API (preferred) or fallback options
+    Transcribe audio using AssemblyAI
     """
     try:
         print(f"Attempting to transcribe audio file: {filepath}")
         
-        # Priority 1: Try OpenAI Whisper API (preferred for production)
-        openai_api_key = os.environ.get('OPENAI_API_KEY')
+        # Use AssemblyAI for transcription
+        print("Using AssemblyAI Speech-to-Text for transcription...")
         
-        if openai_api_key and openai_api_key.startswith('sk-'):
-            try:
-                print("Using OpenAI Whisper API for transcription...")
-                
-                OpenAI = get_openai()
-                if OpenAI:
-                    client = OpenAI(api_key=openai_api_key)
-                    
-                    with open(filepath, 'rb') as audio_file:
-                        response = client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=audio_file,
-                            response_format="text"
-                        )
-                    
-                    transcript = response.strip()
-                    if transcript:
-                        print(f"✅ OpenAI Whisper transcription successful: {len(transcript)} characters")
-                        return transcript
-                    else:
-                        print("OpenAI Whisper returned empty transcript")
-                        
-            except Exception as e:
-                print(f"OpenAI Whisper API error: {e}")
-        else:
-            print("OpenAI API key not configured (needs to start with 'sk-')")
+        # Create transcriber
+        transcriber = aai.Transcriber()
         
-        # Priority 2: Try local Whisper (free alternative for production)
-        whisper = get_whisper()
-        if whisper:
-            print("Using local Whisper model...")
-            try:
-                model = whisper.load_model("base")  # Use base model for better accuracy
-                result = model.transcribe(filepath)
-                transcript = result['text'].strip()
-                if transcript:
-                    print(f"✅ Local Whisper transcription successful: {len(transcript)} characters")
-                    return transcript
-            except Exception as e:
-                print(f"Local Whisper transcription failed: {e}")
+        # Transcribe the audio file
+        transcript = transcriber.transcribe(filepath)
         
-        # Priority 3: Try AssemblyAI (fallback free option)
-        assemblyai = get_elevenlabs()  # Using this function for AssemblyAI now
-        assemblyai_api_key = os.environ.get('ASSEMBLYAI_API_KEY')
-        
-        if assemblyai and assemblyai_api_key:
-            try:
-                print("Using AssemblyAI Speech-to-Text as fallback...")
-                
-                # Set API key
-                assemblyai.settings.api_key = assemblyai_api_key
-                
-                # Create transcriber
-                transcriber = assemblyai.Transcriber()
-                
-                # Transcribe the audio file
-                transcript = transcriber.transcribe(filepath)
-                
-                if transcript.status == assemblyai.TranscriptStatus.completed:
-                    text = transcript.text.strip()
-                    if text:
-                        print(f"✅ AssemblyAI transcription successful: {len(text)} characters")
-                        return text
-                    else:
-                        print("AssemblyAI returned empty transcript")
-                elif transcript.status == assemblyai.TranscriptStatus.error:
-                    print(f"AssemblyAI transcription error: {transcript.error}")
-                else:
-                    print(f"AssemblyAI transcription status: {transcript.status}")
-                        
-            except Exception as e:
-                print(f"AssemblyAI error: {e}")
-        else:
-            print("AssemblyAI API key not configured" if not assemblyai_api_key else "AssemblyAI library not available")
-        
-        # Priority 4: Fallback message for debugging
-        print("⚠️  FALLBACK: Real transcription not available")
-        print("💡 For production transcription, configure OpenAI Whisper API")
-        
-        # Get file info for debugging
-        file_size = os.path.getsize(filepath)
-        filename = os.path.basename(filepath)
-        file_extension = filename.split('.')[-1].lower() if '.' in filename else 'unknown'
-        
-        # Return clear fallback message with Whisper priority
-        return f"""⚠️  TRANSCRIPTION FALLBACK (Real file: {filename})
-        
-🔧 Debug Info:
-- File: {filename} ({file_size} bytes, {file_extension} format)
-- OpenAI Whisper API: {'✅ Configured' if openai_api_key and openai_api_key.startswith('sk-') else '❌ Missing'} (Priority 1)
-- Local Whisper: Available as backup (Priority 2)
-- AssemblyAI API: {'✅ Configured' if assemblyai_api_key else '❌ Missing'} (Priority 3)
-- Status: Using simulation until real transcription is configured
-
-� WHISPER TRANSCRIPTION (Recommended):
-1. 🥇 OpenAI Whisper API: $0.006/minute (~3¢ for 5 minutes) - Best accuracy
-2. 🥈 Local Whisper: Free but requires GPU/CPU power
-3. 🥉 AssemblyAI: Free tier available as fallback
-
-Agent: Hello, this is a test of the CallAnalytics system using the Whisper → Gemini AI pipeline!
-
-Customer: Hi, I uploaded an audio file to test the transcription. Will this use Whisper for transcription?
-
-Agent: Absolutely! Our system prioritizes OpenAI's Whisper API for the most accurate transcription, then uses Google Gemini for detailed call analysis.
-
-Customer: That's exactly what I wanted. How accurate is Whisper for call center audio?
-
-Agent: Whisper is industry-leading for audio transcription, especially for phone calls. It handles background noise, accents, and technical terms very well.
-
-Customer: Perfect! And then Gemini analyzes the transcript for performance metrics?
-
-Agent: Exactly! Whisper converts your audio to text, then Gemini provides detailed analysis including performance scores, sentiment, and improvement suggestions.
-
-Customer: This is the perfect pipeline for call center quality assurance. Thank you!
-
-Agent: You're welcome! The Whisper → Gemini pipeline provides professional-grade call analysis at a very affordable cost.
-
-[DEBUG: This is simulated content. Configure OpenAI Whisper API for real Whisper → Gemini pipeline]"""
-            
-    except Exception as e:
-        print(f"Transcription error: {e}")
-        filename = os.path.basename(filepath) if filepath else 'unknown'
-        return f"Error transcribing {filename}: {str(e)}"
-    try:
-        print(f"Attempting to transcribe audio file: {filepath}")
-        
-        # Try local Whisper first (for development)
-        whisper = get_whisper()
-        if whisper:
-            print("Using local Whisper model for transcription...")
-            try:
-                model = whisper.load_model("tiny")
-                result = model.transcribe(filepath)
-                transcript = result['text']
-                print(f"Local Whisper transcription successful: {len(transcript)} characters")
-                return transcript
-            except Exception as e:
-                print(f"Local Whisper failed: {e}")
-        
-        # For production: Use OpenAI Whisper API (real transcription)
-        print("Using OpenAI Whisper API for real transcription...")
-        OpenAI = get_openai()
-        if OpenAI:
-            openai_api_key = os.environ.get('OPENAI_API_KEY', 'sk-your-openai-api-key-here')
-            
-            if openai_api_key and openai_api_key != 'sk-your-openai-api-key-here':
-                try:
-                    client = OpenAI(api_key=openai_api_key)
-                    
-                    with open(filepath, 'rb') as audio_file:
-                        response = client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=audio_file,
-                            response_format="text"
-                        )
-                    
-                    transcript = response.strip()
-                    print(f"OpenAI Whisper transcription successful: {len(transcript)} characters")
-                    return transcript
-                    
-                except Exception as e:
-                    print(f"OpenAI Whisper API failed: {e}")
+        if transcript.status == aai.TranscriptStatus.completed:
+            text = transcript.text.strip()
+            if text:
+                print(f"✅ AssemblyAI transcription successful: {len(text)} characters")
+                return text
             else:
-                print("OpenAI API key not configured")
+                print("AssemblyAI returned empty transcript")
+                return "No speech detected in the audio file."
+        elif transcript.status == aai.TranscriptStatus.error:
+            print(f"AssemblyAI transcription error: {transcript.error}")
+            return f"Transcription error: {transcript.error}"
+        else:
+            print(f"AssemblyAI transcription status: {transcript.status}")
+            return f"Transcription failed with status: {transcript.status}"
         
-        # Fallback: Use enhanced Gemini for realistic transcription simulation
-        print("Using Gemini AI for enhanced transcription simulation...")
-        file_size = os.path.getsize(filepath)
-        filename = os.path.basename(filepath)
-        
-        model = genai.GenerativeModel('models/gemini-1.5-flash')
-        
-        prompt = f"""
-        You are simulating a real audio transcription service. Generate a realistic customer service call transcript that sounds like actual speech-to-text output.
-        
-        Audio file: {filename} ({file_size} bytes)
-        
-        Create a conversation that includes:
-        - Natural speech patterns with realistic hesitations ("um", "uh", "let me see")
-        - Real customer service procedures and language
-        - Authentic problem-solving dialogue
-        - Natural interruptions and clarifications
-        - Professional but conversational tone
-        - Varied scenarios (billing, tech support, complaints, etc.)
-        
-        Make this sound like a REAL transcription from actual speech, not a perfect script.
-        Include realistic speech artifacts and natural conversation flow.
-        
-        Format: Speaker labels with natural speech patterns.
-        """
-        
-        response = model.generate_content(prompt)
-        if response and response.text:
-            transcript = response.text.strip()
-            print(f"Enhanced AI transcription: {len(transcript)} characters")
-            return transcript
-        
-        # Ultimate fallback
-        return f"Transcription service unavailable for {filename}. Please check audio file format and try again."
-            
     except Exception as e:
         print(f"Transcription error: {e}")
         filename = os.path.basename(filepath) if filepath else 'unknown'
