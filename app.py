@@ -12,6 +12,7 @@ from functools import wraps
 from datetime import datetime, timedelta
 import json
 import assemblyai as aai
+import hashlib
 
 # Configure AssemblyAI
 aai.settings.api_key = os.environ.get('ASSEMBLYAI_API_KEY', 'd077bc5d77b24e22bd8e7258b34332a3')
@@ -56,6 +57,82 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # Enable CORS for all routes to allow React frontend to connect
 CORS(app)
+
+def hash_password(password):
+    """Hash password using SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hashed):
+    """Verify password against hash"""
+    return hashlib.sha256(password.encode()).hexdigest() == hashed
+
+def init_admin_user():
+    """Initialize admin user if not exists"""
+    admin_email = "yashjoshi1901@gmail.com"
+    admin_password = "iamog@123"
+    
+    # Check if admin already exists
+    existing_admin = users_collection.find_one({'email': admin_email})
+    if not existing_admin:
+        admin_user = {
+            'email': admin_email,
+            'password': hash_password(admin_password),
+            'name': 'Admin User',
+            'role': 'admin',
+            'createdAt': datetime.utcnow(),
+            'lastLogin': datetime.utcnow(),
+            'createdBy': 'system'
+        }
+        users_collection.insert_one(admin_user)
+        print(f"✅ Admin user created: {admin_email}")
+    else:
+        print(f"✅ Admin user already exists: {admin_email}")
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({'error': 'Token is missing!'}), 401
+        
+        try:
+            if token.startswith('Bearer '):
+                token = token[7:]
+            data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            current_user_id = data['user_id']
+            current_user = users_collection.find_one({'_id': ObjectId(current_user_id)})
+            if not current_user:
+                return jsonify({'error': 'User not found!'}), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'Token has expired!'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': 'Token is invalid!'}), 401
+        
+        return f(current_user, *args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({'error': 'Token is missing!'}), 401
+        
+        try:
+            if token.startswith('Bearer '):
+                token = token[7:]
+            data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            current_user_id = data['user_id']
+            current_user = users_collection.find_one({'_id': ObjectId(current_user_id)})
+            if not current_user or current_user.get('role') != 'admin':
+                return jsonify({'error': 'Admin access required!'}), 403
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'Token has expired!'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': 'Token is invalid!'}), 401
+        
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -150,31 +227,32 @@ def analyze_with_gemini(transcript):
         # Use the most reliable Gemini model
         model = genai.GenerativeModel('models/gemini-1.5-flash')
         
-        # Enhanced prompt with specific instructions for the poor service case
+        # Enhanced prompt with specific instructions
         prompt = f"""You are an expert call center quality analyst. Analyze this customer service call transcript and provide a detailed performance evaluation.
 
 TRANSCRIPT: "{transcript}"
 
-This transcript shows the agent saying "I'm not here to help you" which is extremely unprofessional. Please provide a strict evaluation.
-
 Respond with ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {{
-    "performance_score": 15,
-    "overall_rating": "Unacceptable",
-    "sentiment_score": 0.1,
-    "dominant_emotion": "hostile",
-    "emotion_confidence": 0.9,
-    "toxicity_score": 0.8,
-    "strengths": [],
-    "improvement_areas": ["Refused to help customer", "Unprofessional attitude", "Failed to resolve issue", "Inappropriate response"],
-    "detailed_analysis": "This is completely unacceptable customer service. The agent explicitly stated 'I'm not here to help you' which is the opposite of what customer service should be. This represents a complete failure to provide assistance, shows unprofessional attitude, and would likely result in customer complaints and loss of business. Immediate retraining and disciplinary action required."
+    "performance_score": <number 0-100>,
+    "overall_rating": "<Excellent/Good/Average/Poor/Very Poor/Unacceptable>",
+    "sentiment_score": <number 0-1>,
+    "dominant_emotion": "<emotion>",
+    "emotion_confidence": <number 0-1>,
+    "toxicity_score": <number 0-1>,
+    "strengths": ["<strength1>", "<strength2>"],
+    "improvement_areas": ["<improvement1>", "<improvement2>"],
+    "detailed_analysis": "<detailed explanation>"
 }}
 
-IMPORTANT: 
-- Score should be very low (0-20) for such poor service
-- Rating should be "Unacceptable" 
-- Detailed analysis should explain why this is terrible service
-- Return ONLY the JSON object, no other text"""
+Evaluation criteria:
+- Customer service professionalism
+- Helpfulness and problem-solving
+- Tone and attitude
+- Communication skills
+- Whether agent properly addresses customer needs
+
+Return ONLY the JSON object, no other text"""
 
         print("Sending request to Gemini...")
         response = model.generate_content(prompt)
@@ -255,8 +333,178 @@ IMPORTANT:
             "detailed_analysis": "Average performance with room for improvement in customer engagement and service quality."
         }
 
+# ================== AUTHENTICATION ROUTES ==================
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+        
+        # Find user by email
+        user = users_collection.find_one({'email': email})
+        
+        if not user or not verify_password(password, user['password']):
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        # Update last login
+        users_collection.update_one(
+            {'_id': user['_id']},
+            {'$set': {'lastLogin': datetime.utcnow()}}
+        )
+        
+        # Generate JWT token
+        token = jwt.encode({
+            'user_id': str(user['_id']),
+            'email': user['email'],
+            'role': user['role'],
+            'exp': datetime.utcnow() + timedelta(days=30)
+        }, JWT_SECRET, algorithm='HS256')
+        
+        return jsonify({
+            'success': True,
+            'token': token,
+            'user': {
+                'id': str(user['_id']),
+                'email': user['email'],
+                'name': user['name'],
+                'role': user['role']
+            }
+        })
+        
+    except Exception as e:
+        print(f"Login error: {e}")
+        return jsonify({'error': 'Login failed'}), 500
+
+@app.route('/api/auth/verify', methods=['POST'])
+@token_required
+def verify_token(current_user):
+    return jsonify({
+        'success': True,
+        'user': {
+            'id': str(current_user['_id']),
+            'email': current_user['email'],
+            'name': current_user['name'],
+            'role': current_user['role']
+        }
+    })
+
+# ================== USER MANAGEMENT ROUTES (ADMIN ONLY) ==================
+
+@app.route('/api/admin/create-user', methods=['POST'])
+@admin_required
+def create_user(current_user):
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        name = data.get('name')
+        role = data.get('role', 'user')  # Default to 'user'
+        
+        if not all([email, password, name]):
+            return jsonify({'error': 'Email, password, and name are required'}), 400
+        
+        if role not in ['user', 'admin']:
+            return jsonify({'error': 'Role must be either "user" or "admin"'}), 400
+        
+        # Check if user already exists
+        existing_user = users_collection.find_one({'email': email})
+        if existing_user:
+            return jsonify({'error': 'User with this email already exists'}), 400
+        
+        # Create new user
+        new_user = {
+            'email': email,
+            'password': hash_password(password),
+            'name': name,
+            'role': role,
+            'createdAt': datetime.utcnow(),
+            'lastLogin': None,
+            'createdBy': str(current_user['_id'])
+        }
+        
+        result = users_collection.insert_one(new_user)
+        
+        return jsonify({
+            'success': True,
+            'message': f'User {email} created successfully',
+            'userId': str(result.inserted_id)
+        })
+        
+    except Exception as e:
+        print(f"Create user error: {e}")
+        return jsonify({'error': 'Failed to create user'}), 500
+
+@app.route('/api/admin/update-user-role', methods=['POST'])
+@admin_required
+def update_user_role(current_user):
+    try:
+        data = request.get_json()
+        user_id = data.get('userId')
+        new_role = data.get('role')
+        
+        if not user_id or not new_role:
+            return jsonify({'error': 'User ID and role are required'}), 400
+        
+        if new_role not in ['user', 'admin']:
+            return jsonify({'error': 'Role must be either "user" or "admin"'}), 400
+        
+        # Update user role
+        result = users_collection.update_one(
+            {'_id': ObjectId(user_id)},
+            {'$set': {'role': new_role}}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({'error': 'User not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'message': f'User role updated to {new_role}'
+        })
+        
+    except Exception as e:
+        print(f"Update user role error: {e}")
+        return jsonify({'error': 'Failed to update user role'}), 500
+
+@app.route('/api/admin/delete-user', methods=['DELETE'])
+@admin_required
+def delete_user(current_user):
+    try:
+        data = request.get_json()
+        user_id = data.get('userId')
+        
+        if not user_id:
+            return jsonify({'error': 'User ID is required'}), 400
+        
+        # Prevent admin from deleting themselves
+        if str(current_user['_id']) == user_id:
+            return jsonify({'error': 'Cannot delete your own account'}), 400
+        
+        # Delete user
+        result = users_collection.delete_one({'_id': ObjectId(user_id)})
+        
+        if result.deleted_count == 0:
+            return jsonify({'error': 'User not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'message': 'User deleted successfully'
+        })
+        
+    except Exception as e:
+        print(f"Delete user error: {e}")
+        return jsonify({'error': 'Failed to delete user'}), 500
+
+# ================== PROTECTED ROUTES ==================
+
 @app.route('/upload', methods=['POST'])
-def upload_file():
+@token_required
+def upload_file(current_user):
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
     
@@ -286,11 +534,11 @@ def upload_file():
             print(f"✅ Performance analysis complete - Score: {agent_performance.get('performance_score', 'N/A')}")
             print(f"📊 Analysis details: {agent_performance.get('detailed_analysis', 'N/A')[:100]}...")
             
-            # Save to database (no user association when auth is disabled)
+            # Save to database with user association
             report_data = {
-                'userId': None,  # No user authentication
-                'userEmail': 'anonymous@example.com',  # Default anonymous email
-                'userName': 'Anonymous User',  # Default anonymous name
+                'userId': str(current_user['_id']),
+                'userEmail': current_user['email'],
+                'userName': current_user['name'],
                 'filename': filename,
                 'transcript': transcript,
                 'performanceScore': agent_performance['performance_score'],
@@ -330,19 +578,18 @@ def upload_file():
     return jsonify({'error': 'Invalid file type. Supported formats: wav, mp3, m4a, ogg'}), 400
 
 @app.route('/api/user/reports', methods=['GET'])
-def get_user_reports():
+@token_required
+def get_user_reports(current_user):
     try:
-        # Return all reports since authentication is disabled
+        # Return only current user's reports
         reports = list(reports_collection.find(
-            {},  # No user filter
+            {'userId': str(current_user['_id'])},
             {'transcript': 0}  # Exclude transcript for list view
         ).sort('createdAt', -1))
         
         # Convert ObjectId to string
         for report in reports:
             report['_id'] = str(report['_id'])
-            if report.get('userId'):  # Only convert if userId exists
-                report['userId'] = str(report['userId'])
         
         return jsonify({
             'success': True,
@@ -352,15 +599,14 @@ def get_user_reports():
         return jsonify({'error': f'Failed to fetch reports: {str(e)}'}), 500
 
 @app.route('/api/admin/reports', methods=['GET'])
-def get_all_reports():
+@admin_required
+def get_all_reports(current_user):
     try:
         reports = list(reports_collection.find({}).sort('createdAt', -1))
         
         # Convert ObjectId to string
         for report in reports:
             report['_id'] = str(report['_id'])
-            if report.get('userId'):
-                report['userId'] = str(report['userId'])
         
         return jsonify({
             'success': True,
@@ -370,9 +616,10 @@ def get_all_reports():
         return jsonify({'error': f'Failed to fetch reports: {str(e)}'}), 500
 
 @app.route('/api/admin/users', methods=['GET'])
-def get_all_users():
+@admin_required
+def get_all_users(current_user):
     try:
-        users = list(users_collection.find({}, {'googleId': 0}))  # Exclude sensitive data
+        users = list(users_collection.find({}, {'password': 0}))  # Exclude password
         
         # Convert ObjectId to string
         for user in users:
@@ -405,31 +652,38 @@ def root():
         <body>
             <div class="header">
                 <h1>🎯 AI Call Agent Backend API</h1>
-                <p class="status">✅ Status: RUNNING</p>
+                <p class="status">✅ Status: RUNNING (Authentication Enabled)</p>
                 <p>Powered by AssemblyAI + Google Gemini AI</p>
             </div>
             
             <h2>📋 Available Endpoints</h2>
+            <div class="endpoint"><strong>POST /api/auth/login</strong> - User login</div>
+            <div class="endpoint"><strong>POST /api/auth/verify</strong> - Verify token</div>
             <div class="endpoint"><strong>GET /health</strong> - Health check</div>
-            <div class="endpoint"><strong>POST /upload</strong> - Upload audio file for analysis</div>
-            <div class="endpoint"><strong>GET /api/user/reports</strong> - Get user reports</div>
-            <div class="endpoint"><strong>GET /api/admin/reports</strong> - Get all reports (admin)</div>
-            <div class="endpoint"><strong>GET /api/admin/users</strong> - Get all users (admin)</div>
+            <div class="endpoint"><strong>POST /upload</strong> - Upload audio file for analysis (Protected)</div>
+            <div class="endpoint"><strong>GET /api/user/reports</strong> - Get user reports (Protected)</div>
+            <div class="endpoint"><strong>GET /api/admin/reports</strong> - Get all reports (Admin Only)</div>
+            <div class="endpoint"><strong>GET /api/admin/users</strong> - Get all users (Admin Only)</div>
+            <div class="endpoint"><strong>POST /api/admin/create-user</strong> - Create new user (Admin Only)</div>
+            <div class="endpoint"><strong>POST /api/admin/update-user-role</strong> - Update user role (Admin Only)</div>
+            <div class="endpoint"><strong>DELETE /api/admin/delete-user</strong> - Delete user (Admin Only)</div>
             
             <h2>🚀 Features</h2>
+            <div class="feature">🔐 JWT Authentication & Authorization</div>
+            <div class="feature">👥 User Management (Admin Portal)</div>
             <div class="feature">🎤 AssemblyAI Speech-to-Text Transcription</div>
             <div class="feature">🧠 Google Gemini AI Performance Analysis</div>
             <div class="feature">📊 Call Quality Scoring & Metrics</div>
             <div class="feature">🛡️ Toxicity Detection & Content Filtering</div>
             <div class="feature">😊 Sentiment Analysis & Emotion Detection</div>
             
-            <h2>🔧 API Usage</h2>
-            <p>This API analyzes call center audio files and provides detailed performance metrics using AI.</p>
-            <p><strong>Upload endpoint:</strong> <code>POST /upload</code> with audio file (wav, mp3, m4a, ogg)</p>
+            <h2>🔧 Default Admin Credentials</h2>
+            <p><strong>Email:</strong> yashjoshi1901@gmail.com</p>
+            <p><strong>Password:</strong> iamog@123</p>
             
             <hr style="margin: 30px 0;">
             <p style="text-align: center; color: #666;">
-                <small>Version 2.0 | AssemblyAI Integration | Deployed on Render</small>
+                <small>Version 3.0 | JWT Authentication + User Management | Deployed on Render</small>
             </p>
         </body>
         </html>
@@ -438,41 +692,41 @@ def root():
         return jsonify({
             'message': 'AI Call Agent Backend API',
             'status': 'running',
-            'version': '2.0',
+            'authentication': 'enabled',
+            'version': '3.0',
             'endpoints': {
+                'login': '/api/auth/login (POST)',
+                'verify': '/api/auth/verify (POST)',
                 'health': '/health',
-                'upload': '/upload (POST)',
-                'user_reports': '/api/user/reports (GET)',
-                'admin_reports': '/api/admin/reports (GET)',
-                'admin_users': '/api/admin/users (GET)'
+                'upload': '/upload (POST) - Protected',
+                'user_reports': '/api/user/reports (GET) - Protected',
+                'admin_reports': '/api/admin/reports (GET) - Admin Only',
+                'admin_users': '/api/admin/users (GET) - Admin Only',
+                'create_user': '/api/admin/create-user (POST) - Admin Only',
+                'update_role': '/api/admin/update-user-role (POST) - Admin Only',
+                'delete_user': '/api/admin/delete-user (DELETE) - Admin Only'
             },
             'features': [
+                'JWT Authentication & Authorization',
+                'User Management System',
                 'AssemblyAI Speech-to-Text Transcription',
                 'Google Gemini AI Performance Analysis',
                 'Call Quality Scoring',
                 'Toxicity Detection',
                 'Sentiment Analysis'
-            ]
+            ],
+            'default_admin': {
+                'email': 'yashjoshi1901@gmail.com',
+                'password': 'iamog@123'
+            }
         })
-
-@app.route('/')
-def home():
-    return jsonify({
-        'message': 'Call Analysis API is running',
-        'status': 'healthy',
-        'endpoints': {
-            'health': '/health',
-            'upload': '/upload (POST)',
-            'user_reports': '/api/user/reports',
-            'admin_reports': '/api/admin/reports',
-            'admin_users': '/api/admin/users'
-        },
-        'version': '2.0 - AssemblyAI + Gemini AI'
-    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'message': 'Call Analysis API is running'})
+    return jsonify({'status': 'healthy', 'message': 'Call Analysis API is running with authentication'})
+
+# Initialize admin user on startup
+init_admin_user()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
