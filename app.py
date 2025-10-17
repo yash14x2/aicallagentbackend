@@ -71,22 +71,42 @@ def init_admin_user():
     admin_email = "yashjoshi1901@gmail.com"
     admin_password = "iamog@123"
     
-    # Check if admin already exists
-    existing_admin = users_collection.find_one({'email': admin_email})
-    if not existing_admin:
-        admin_user = {
-            'email': admin_email,
-            'password': hash_password(admin_password),
-            'name': 'Admin User',
-            'role': 'admin',
-            'createdAt': datetime.utcnow(),
-            'lastLogin': datetime.utcnow(),
-            'createdBy': 'system'
-        }
-        users_collection.insert_one(admin_user)
-        print(f"✅ Admin user created: {admin_email}")
-    else:
-        print(f"✅ Admin user already exists: {admin_email}")
+    try:
+        # Check if admin already exists
+        existing_admin = users_collection.find_one({'email': admin_email})
+        if existing_admin:
+            # Check if admin has all required fields
+            if 'password' not in existing_admin or 'role' not in existing_admin:
+                print(f"⚠️ Admin user incomplete - updating: {admin_email}")
+                users_collection.update_one(
+                    {'email': admin_email},
+                    {'$set': {
+                        'password': hash_password(admin_password),
+                        'name': 'Admin User',
+                        'role': 'admin',
+                        'createdAt': datetime.utcnow(),
+                        'lastLogin': datetime.utcnow(),
+                        'createdBy': 'system'
+                    }}
+                )
+                print(f"✅ Admin user updated: {admin_email}")
+            else:
+                print(f"✅ Admin user already exists: {admin_email}")
+        else:
+            # Create new admin user
+            admin_user = {
+                'email': admin_email,
+                'password': hash_password(admin_password),
+                'name': 'Admin User',
+                'role': 'admin',
+                'createdAt': datetime.utcnow(),
+                'lastLogin': datetime.utcnow(),
+                'createdBy': 'system'
+            }
+            users_collection.insert_one(admin_user)
+            print(f"✅ Admin user created: {admin_email}")
+    except Exception as e:
+        print(f"❌ Error initializing admin user: {e}")
 
 def token_required(f):
     @wraps(f)
@@ -339,16 +359,38 @@ Return ONLY the JSON object, no other text"""
 def login():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
         email = data.get('email')
         password = data.get('password')
         
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
         
+        print(f"Login attempt for email: {email}")
+        
         # Find user by email
         user = users_collection.find_one({'email': email})
+        print(f"User found: {user is not None}")
         
-        if not user or not verify_password(password, user['password']):
+        if not user:
+            print("User not found in database")
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        # Check if user has password field
+        if 'password' not in user:
+            print(f"User {email} missing password field - recreating admin user")
+            # If it's the admin user, recreate them
+            if email == "yashjoshi1901@gmail.com":
+                users_collection.delete_one({'email': email})
+                init_admin_user()
+                user = users_collection.find_one({'email': email})
+            else:
+                return jsonify({'error': 'User account corrupted - contact admin'}), 500
+        
+        if not verify_password(password, user['password']):
+            print("Password verification failed")
             return jsonify({'error': 'Invalid email or password'}), 401
         
         # Update last login
@@ -392,6 +434,26 @@ def verify_token(current_user):
             'role': current_user['role']
         }
     })
+
+@app.route('/api/auth/reset-admin', methods=['POST'])
+def reset_admin():
+    """Reset admin user - useful for debugging"""
+    try:
+        admin_email = "yashjoshi1901@gmail.com"
+        
+        # Delete existing admin
+        users_collection.delete_many({'email': admin_email})
+        
+        # Recreate admin
+        init_admin_user()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Admin user reset successfully'
+        })
+    except Exception as e:
+        print(f"Reset admin error: {e}")
+        return jsonify({'error': 'Failed to reset admin user'}), 500
 
 # ================== USER MANAGEMENT ROUTES (ADMIN ONLY) ==================
 
