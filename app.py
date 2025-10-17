@@ -652,12 +652,15 @@ def get_user_reports(current_user):
         # Convert ObjectId to string
         for report in reports:
             report['_id'] = str(report['_id'])
+            if 'userId' in report and report['userId']:
+                report['userId'] = str(report['userId'])
         
         return jsonify({
             'success': True,
             'reports': reports
         })
     except Exception as e:
+        print(f"Error in get_user_reports: {e}")
         return jsonify({'error': f'Failed to fetch reports: {str(e)}'}), 500
 
 @app.route('/api/admin/reports', methods=['GET'])
@@ -666,15 +669,26 @@ def get_all_reports(current_user):
     try:
         reports = list(reports_collection.find({}).sort('createdAt', -1))
         
-        # Convert ObjectId to string
+        # Convert ObjectId to string and handle missing fields
         for report in reports:
             report['_id'] = str(report['_id'])
+            # Handle reports created before authentication was added
+            if 'userId' in report and report['userId']:
+                report['userId'] = str(report['userId'])
+            else:
+                report['userId'] = None
+                # Set default values for missing fields
+                if 'userEmail' not in report:
+                    report['userEmail'] = 'anonymous@example.com'
+                if 'userName' not in report:
+                    report['userName'] = 'Anonymous User'
         
         return jsonify({
             'success': True,
             'reports': reports
         })
     except Exception as e:
+        print(f"Error in get_all_reports: {e}")
         return jsonify({'error': f'Failed to fetch reports: {str(e)}'}), 500
 
 @app.route('/api/admin/users', methods=['GET'])
